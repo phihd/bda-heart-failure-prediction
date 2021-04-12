@@ -1,0 +1,1124 @@
+---
+pdf_document:
+  toc: yes
+  toc_depth: 0
+author: "Khoa Nguyen & Phi Dang"
+title: "BDA Project - Heart Failure"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r warning=FALSE, include=FALSE}
+library(loo)
+library(rstan)
+library(aaltobda)
+library(brms)
+library(corrplot)
+library(rstanarm)
+library(bayesplot)
+library(projpred)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(caret)
+library(glmnet)
+set.seed(123)
+smp_size = floor(0.75 * nrow(data))
+
+data = read.csv(file = "heart_failure_clinical_records_dataset.csv")
+data = subset (data, select = -time)
+names(data) = c("age", "anaemia", "cpk", "diabetes", "ejection", "pressure", "platelets", "creatinine", "sodium", "sex", "smoking", "death")
+
+age = data$age #mean = 60.8, std = 11.9
+anaemia = data$anaemia #boolean - decrease of red blood cells
+cpk = data$cpk #mean = 582, std = 969 - Level of the CPK enzyme in the blood
+diabetes = data$diabetes #boolean - has diabetes
+ejection = data$ejection #mean = 38.1%, std = 11.8% Percentage of blood leaving the heart at each contraction
+pressure = data$pressure #boolean If the patient has hypertension
+platelets = data$platelets #mean = 283k, std = 97.6k If the patient has hypertension
+creatinine = data$creatinine #mean = 1.39, std = 1.03 Level of serum creatinine in the blood
+sodium = data$sodium #mean = 137, std = 4.41, Level of serum sodium in the blood
+sex = data$sex #binary
+smoking = data$smoking #boolean
+time = data$time #mean = 130, std = 77.5 Follow-up period
+death = data$death #boolean (Response variable)
+
+smp_size = floor(0.75 * nrow(data))
+train_ind = sample(seq_len(nrow(data)), size = smp_size)
+data = data[train_ind, ]
+test = data[-train_ind, ]
+
+
+full_data = list(N = nrow(data), M = ncol(data), Y = data$death, X = data, 
+                 N_test = nrow(test), Y_true = test$death, X_test = test, mu = colMeans(data), sigma = cov(data))
+
+X = subset(data, select = c(age, ejection, creatinine, sodium))
+N = nrow(X)
+M = ncol(X)
+Y = data$death
+mu = c(60.8, 0.38, 1.39, 137)
+sigma_selected = cov(subset(data, select = c(age, ejection, creatinine, sodium)))
+
+X_test = subset(test, select = c(age, ejection, creatinine, sodium))
+N_test = nrow(X_test)
+Y_true = test$death
+
+selected_data_2 = list(N = N, M = M, Y = Y, X = X, 
+                       N_test = N_test, Y_true = Y_true, X_test = X_test, mu = mu, sigma = sigma_selected)
+
+X = subset(data, select = c(age, ejection, creatinine))
+N = nrow(X)
+M = ncol(X)
+Y = data$death
+mu = c(60.8, 0.38, 1.39)
+sigma_full = cov(data)
+sigma_selected = cov(subset(data, select = c(age, ejection, creatinine)))
+
+X_test = subset(test, select = c(age, ejection, creatinine))
+N_test = nrow(X_test)
+Y_true = test$death
+
+selected_data_1 = list(N = N, M = M, Y = Y, X = X, 
+                       N_test = N_test, Y_true = Y_true, X_test = X_test, mu = mu, sigma = sigma_selected)
+
+X = subset(data, select = c(age, ejection, creatinine, cpk, platelets, sodium))
+N = nrow(X)
+M = ncol(X)
+Y = data$death
+mu = c(60.8, 0.38, 1.39, 582, 283000, 137)
+sigma_selected = cov(subset(data, select = c(age, ejection, creatinine, cpk, platelets, sodium)))
+
+X_test = subset(test, select = c(age, ejection, creatinine, cpk, platelets, sodium))
+N_test = nrow(X_test)
+Y_true = test$death
+selected_data_3 = list(N = N, M = M, Y = Y, X = X, 
+                       N_test = N_test, Y_true = Y_true, X_test = X_test, mu = mu, sigma = sigma_selected)  
+```  
+# 1. Introduction  
+## a) Problem  
+CVDs (or Cardiovascular diseases) is a general term indicating a set of heart and blood vessels disorders. Anually, CVDs causes about 18 million deaths, accounting for a third of total deaths all over the words. 85% of the number are due to heart attack and stroke which becomes one of the most common causes of death. People with or at the risk of CVDs require diagnosis as early as possible to receive treatment by means of therapy and pharmaceutical drugs as needed.      
+```{r pressure, echo=FALSE, out.width = '50%'}  
+knitr::include_graphics("fig1.jpg")  
+knitr::include_graphics("fig2.png") 
+```  
+    
+## b) Motivation  
+The project aims to propose a clear understanding what is the cause of heart failure. First, it presents several data exploration processes with explanatory variable analysis and visualizations. Second, it indentifies important features to build up a prediction model together with some diagnostics. Finally, it compares and analyse model results with different settings accompanied by some potential improvement recommendations.  
+
+## c) Main modeling idea
+First, we perform some feature selection with several models. From acquired sets of feature, we plug them in a Logistic Regression model and see the compare the y_pred with the y_true. This is a classification task as the response variable is Boolean. We also use Bernoulli distribution to predict y_pred value.  
+  
+# 2. Dataset  
+## a) Description  
+The data is from Kaggle (https://www.kaggle.com/andrewmvd/heart-failure-clinical-data). There are several papers that uses the same dataset with a Machine Learning approach to predict heart failure such as Decision Tree, Neural Network, Naive Bayes and so on. We use a more statistical approach to the problem and see whether we can predict the heart failure rate with the same level of accuracy as the other papers. However, since the prediction model that we use here is Logistics Regression, there is a high chance that other paper uses it as well. Also, for feature selection, beside Bayesian Inference and LASSO, we also apply a Machine Learning model which is a Tree Classifier in order to test several combinations of features so that we can compare them together.  In conclusion, for this project, we used 3 variable selection model: TreeClassifier, Bayesian Inference and LASSO and 1 non-linear model which is Logistics Regression.  
+  
+The dataset consists of the following features:    
+* age - Age of the patient     
+    + mean = 60.8    
+    +  std = 11.9    
+* anaemia - Decrease of red blood cells    
+    + boolean (0 = No, 1 = Yes)       
+* cpk - Level of the CPK enzyme in the blood      
+    + mean = 582      
+    + std = 969      
+* diabetes -  If the patient has diabetes       
+    + boolean (0 = No, 1 = Yes)      
+* ejection - Percentage of blood leaving the heart at each contraction      
+    + mean = 38.1%      
+    + std = 11.8%        
+* pressure - If the patient has hypertension     
+    + boolean (0 = No, 1 = Yes)       
+* platelets - Platelets in the blood     
+    + mean = 283k    
+    + std = 97.6k      
+* creatinine - Level of serum creatinine in the blood      
+    + mean = 1.39      
+    + std = 1.03      
+* sodium - Level of serum sodium in the blood      
+    + mean = 137      
+    + std = 4.41      
+* sex - Woman or man      
+    + binary (Male = 1, Female =0)     
+* smoking - If the patient smokes      
+    + boolean (0 = No, 1 = Yes)      
+* time - Follow-up period      
+    + mean = 130, std = 77.5    
+* death - (Response variable)    
+    +  boolean (0 = No, 1 = Yes)    
+  
+Although the feature "time", according to the correlation plot below, has a very high correlation with our dependent variable, it is considered not to be one of the feature that can cause heart failure and therefore be omitted from the dataset.  
+  
+## b) Visualization   
+From the correlation plot, we see that the variables age, ejection_fraction, serum_creatine and serum_sodium seems to have high correlation with our independent variable which is DEATH_EVENT. Therefore, we decided to split the logistic regression model into 2 versions, one with our proposed variable only and another with all variable in order to evaluate both model's performance.  
+```{r}
+corrplot(cor(data))
+```  
+  
+Besides correlation relationship between the variable, we also want to investigate the distributions of the features as well as the percentage of death by each feature.    
+  
+```{r}
+barplot(table(death, age), 
+        main = "Death cases by Age", 
+        xlab = "Age", ylab = "Number of People", 
+        legend = rownames(table(death, age)))
+```  
+The age range from around 40-95 which is quite accurate since Cardiovascular disease is commonly seen in middle-age group. Although the ages seems to vary, the age still resembles normal distribution, especially when grouping the ages as a group.    
+  
+```{r}
+barplot(table(death, ejection), 
+        main = "Death cases by ejection fraction", 
+        xlab = "Percentage", ylab = "Percentage", 
+        legend = rownames(table(death, ejection)))
+```  
+The percentage of ejection fraction is focus around 20-50 which is a common phenomenon of Cardiovascular disease with blood cells get blocked and cannot travel freely inside the vein.  The graph resembles a normal distribution as well.    
+  
+```{r}
+barplot(table(death, creatinine), 
+        main = "Death cases by level of serum creatinine in blood", 
+        xlab = "Level of serum creatinine in blood", ylab = "Number of People", 
+        legend = rownames(table(death, creatinine)))
+```  
+According to medical research, level of creatinine in blood can also increase the mortality rate of CVD patient. The distribution seen on the graph can be considered normal since the normal range for creatinine level is the blood is 0.84-1.21 mg/dL. The percentage of death is also reflected quite accurately on the graph. The distribution of creatinine feature can be considered left skewed normal distribution.  
+  
+```{r}
+barplot(table(death, sodium), 
+        main = "Death cases by level of serum sodium in blood", 
+        xlab = "Level of sodium in blood", ylab = "Number of People", 
+        legend = rownames(table(death, sodium)))
+```   
+According to medical research, sodium level to high in blood can cause the blood to thicken and harder to flow which results in higher blood pressure. This can become more severe if one has CVD. Although in the data, the sodium level concentrate around 135-145 mEq/L which is normal sodium level in blood, the feature can still be considered as a factor that causes heart failure. From the plot, we can also see that the level of sodium in blood follows a normal distribution but a little right skewed.   
+  
+```{r}
+barplot(table(death, sex), 
+        main = "Death in each sex", 
+        xlab = "sex", ylab = "Number of People", 
+        legend = rownames(table(death, sex)), beside = TRUE)
+```    
+This plot shows the death ration in each sex. We can see that both men and women has the same alive to death ratio.        
+        
+# 3. Feature selection  
+Beside using correlation matrix for feature selection, we decided to also implement TreeClassifier and variable selection based on Bayesian inference. The goal is to compare the results from these model with the full model and the selected variable from correlation matrix.  
+Ultimately, we want to study what can be considered "direct" causes to heart failure.  
+  
+## TreeClassifier  
+```{r}
+fit_rf = randomForest(factor(death)~., data=data)
+varImpPlot(fit_rf)
+```  
+From the plot, we can see that the first 3 features selected by TreeClassifier and the last one which is sodium is similar to the 4 features selected by looking at the correlation matrix. The are 2 different features which are platelets and cpk.  
+  
+## Bayesian Inference  
+Firstly, we fit the full model using brm function and analyze the performance of each feature:  
+```{r}
+fit = stan_glm(death~age+anaemia+cpk+diabetes+ejection+pressure+platelets+creatinine+sodium+sex+smoking,
+          data = data,
+          family = binomial("logit"),
+          prior = default_prior_coef(family),
+          refresh=0,
+          verbose = FALSE)
+summary(fit)
+```  
+The model Rhat and n_eff looks good. However, we want to perform feature selection to not only reduce the computing cost but also to investigate whether the model performs the same but with fewer features.      
+  
+Perform feature selection:    
+```{r message=FALSE, warning=FALSE, include=FALSE}
+fit_cv = cv_varsel(fit, method = 'forward', cv_method='LOO')
+```  
+    
+After fit_cv, we plot it to see the optimal number of features, and find out what they are:     
+```{r}
+plot(fit_cv, stats = c('elpd', 'rmse'))
+```  
+  
+According to the plot, it seems like with only 3 variables, the model performs even better than with 11 variables. Now we investigate what are the 3 variables:    
+```{r}
+fit_cv$solution_terms[1:3]
+```  
+The features proposed by fit_cv are very similar to those from the correlation matrix. We will see if their performance is better than the features previously selected.  
+  
+## LASSO  
+Here, we also test the output of LASSO to see whether the combination of variables is different.  
+```{r}
+x = as.matrix(data[,-12])
+y = data$death
+cv.lasso = cv.glmnet(x, y, family='binomial', alpha=1, parallel=TRUE, standardize=TRUE, type.measure='auc')
+plot(cv.lasso)
+cat('Min Lambda: ', cv.lasso$lambda.min, '\n 1Sd Lambda: ', cv.lasso$lambda.1se, '\n')
+df_coef = round(as.matrix(coef(cv.lasso, s=cv.lasso$lambda.min)), 2)
+df_coef[df_coef[, 1] != 0, ]
+```  
+Since LASSO has the same combination of Bayesian Inference, we treat the outcome of the two as one combination only.  
+  
+# 4. Priors  
+For the model, we decided that for $\beta_i, i\geq1$ to have prior obtain from the multivariate normal distribution with mean vector and covariance matrix calculated based on the number of feature selected.    
+  
+# 5. Models  
+After several feature selection method, we apply our different combinations of features into the model. First combination being the features chosen from Bayesian Inference analysis, second are the ones chosen from correlation matrix and the thrid one is chosen by TreeClasifier. Finally, our last one is the full model, where we use every features as a control.  
+  
+For modeling, we work on Logistics Regression model. Since our independent variable has Boolean type, we use Bernoulli distribution for the independent variable and Logistics Regression is good at modeling binary dependent variable.    
+  
+```{stan output.var = "LogitRegression.stan"}
+data {
+  int<lower=1> N; //number of observation
+  int<lower=1> M; //number of explanatory variable
+  int Y[N];       //independent variable
+  matrix[N, M] X; //explanatory variables
+  
+  int<lower=1> N_test; //number of test observation
+  int Y_true[N_test]; //true Y
+  matrix[N_test, M] X_test; //test train
+  
+  vector[M] mu; //mean vector
+  cov_matrix[M] sigma; //covariance matrix
+}
+parameters {
+  vector[M] beta;
+}
+model {
+  beta ~ multi_normal(mu, sigma); //prior based on distribution of the explanatory variables
+  Y ~ bernoulli_logit(X*beta); //bernoulli logit since Y has boolean type
+}
+generated quantities {
+  vector[N_test] Y_pred = inv_logit(X_test * beta); //Y_pred
+  vector[N] log_lik;
+  for (n in 1:N) {
+    log_lik[n] = bernoulli_logit_lpmf(Y[n] |X[n, ] * beta);
+  }
+}
+```  
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+fit_selected_1 = stan(file = "LogitRegression.stan", data = selected_data_1, refresh = 0)
+Y_pred_selected_1 = round(colMeans(extract(fit_selected_1)$Y_pred))
+```  
+  
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+fit_selected_2 = stan(file = "LogitRegression.stan", data = selected_data_2, refresh = 0)
+Y_pred_selected_2 = round(colMeans(extract(fit_selected_2)$Y_pred))
+```  
+  
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+fit_selected_3 = stan(file = "LogitRegression.stan", data = selected_data_3, refresh = 0)
+Y_pred_selected_3 = round(colMeans(extract(fit_selected_2)$Y_pred))
+```    
+  
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+fit_full = stan(file = "LogitRegression.stan", data = full_data, refresh = 0)
+Y_pred_full = round(colMeans(extract(fit_full)$Y_pred))
+```  
+
+# 6. Convergence diagnostics  
+```{r}
+print("Rhat values: ")
+rhat(fit_selected_1)
+
+print("Check divergences: ")
+check_divergences(fit_selected_1)
+
+print("Check treedepth:")
+check_treedepth(fit_selected_1)
+
+print("n_eff values: ")
+loo(fit_selected_1)$diagnostics$n_eff
+
+print("Performance of k_hat values and elpd_loo")
+loo(fit_selected_1)
+
+print("Distribution of k_hat")
+hist(loo(fit_selected_1)$diagnostics$pareto_k, main = "Histogram of k_hat values")
+```  
+  
+```{r}
+print("Rhat values: ")
+rhat(fit_selected_2)
+
+print("Check divergences: ")
+check_divergences(fit_selected_2) 
+
+print("Check treedepth:")
+check_treedepth(fit_selected_2)
+
+print("n_eff values: ")
+loo(fit_selected_2)$diagnostics$n_eff
+
+print("Performance of k_hat values and elpd_loo")
+loo(fit_selected_2)
+
+print("Distribution of k_hat")
+hist(loo(fit_selected_2)$diagnostics$pareto_k, main = "Histogram of k_hat values")
+```  
+  
+```{r}
+print("Rhat values: ")
+rhat(fit_selected_3)
+
+print("Check divergences: ")
+check_divergences(fit_selected_3)
+
+print("Check treedepth:")
+check_treedepth(fit_selected_3)
+
+print("n_eff values: ")
+loo(fit_selected_3)$diagnostics$n_eff
+
+print("Performance of k_hat values and elpd_loo")
+loo(fit_selected_3)
+
+print("Distribution of k_hat")
+hist(loo(fit_selected_3)$diagnostics$pareto_k, main = "Histogram of k_hat values")
+```  
+  
+```{r}
+print("Rhat values: ")
+rhat(fit_full)
+
+print("Check divergences: ")
+check_divergences(fit_full)
+
+print("Check treedepth:")
+check_treedepth(fit_full)
+
+print("n_eff values: ")
+loo(fit_full)$diagnostics$n_eff
+
+print("Performance of k_hat values and elpd_loo")
+loo(fit_full)
+
+print("Distribution of k_hat")
+hist(loo(fit_full)$diagnostics$pareto_k, main = "Histogram of k_hat values")
+```    
+  
+From the results above, we can see that the 4 model sees no divergence. There are quite a lot diverging chains in the last two model indicating the unstability of the model. Rhat value from the first 2 is stable and very closed to 1. Tthe last 2 models' Rhat value seems to be very bad. In conclusion, the first 2 models are very stable for analysis and reliable while the last 2 are very unstable, unreliable and more work is required to improve the last 2.  
+Also, from the $\hat{k}$ value plotted, we also see that the first 2 model is really good. The last model $\hat{k}$ value also show that the model is quite reliable although it does not seems to converge really well. However, the 3rd model $\hat{k}$ is very bad despite having elpd_loo value much higher than that from the full model, saying that not only it does not converge really well but also not very reliable.    
+Despite all the values above, we still compare all 4 prediction-accuracy-wise and elpd_loo-value-wise in the next section.  
+  
+# 7. Model comparison  
+
+```{r}
+confusionMatrix(table(Y_pred_selected_1, Y_true))
+```    
+  
+```{r}
+confusionMatrix(table(Y_pred_selected_2, Y_true))
+```  
+  
+```{r}
+confusionMatrix(table(Y_pred_selected_3, Y_true))
+```  
+  
+```{r}
+confusionMatrix(table(Y_pred_full, Y_true))
+```  
+  
+```{r warning=FALSE}
+cat("\nSelected Bayesian Inference PSIS_LOO:" ,loo(fit_selected_1)$estimates[1], "\n");
+cat("\nSelected from correlation matrix PSIS_LOO:" , loo(fit_selected_2)$estimates[1], "\n");
+cat("\nSelected from TreeClassifer PSIS_LOO:" ,loo(fit_selected_3)$estimates[1], "\n\n");
+cat("\nFull model PSIS_LOO:" ,loo(fit_full)$estimates[1], "\n\n");
+loo_compare(loo(fit_selected_1), loo(fit_selected_2), loo(fit_selected_3), loo(fit_full))
+```    
+  
+From both the comparison and confusion matrix results, we see that model 1 and 2 are quite reliable although accuracy is around 80% which can still be improved.    
+  
+# 8. Posterior predictive assessment    
+  
+We plot out the posterior predictive check with ppc_dens_overlay to see how the true values and the predicted values differ from each others.  
+```{r}
+yrep = round(extract(fit_selected_1)$Y_pred)
+ppc_dens_overlay(test$death, yrep[sample(nrow(yrep), 25), ])
+```    
+  
+```{r}
+yrep = round(extract(fit_selected_2)$Y_pred)
+ppc_dens_overlay(test$death, yrep[sample(nrow(yrep), 25), ])
+```  
+  
+```{r}
+yrep = round(extract(fit_selected_3)$Y_pred)
+ppc_dens_overlay(test$death, yrep[sample(nrow(yrep), 25), ])
+```  
+  
+```{r}
+yrep = round(extract(fit_full)$Y_pred)
+ppc_dens_overlay(test$death, yrep[sample(nrow(yrep), 25), ])
+```  
+From the plots above, although the $y_{rep}$ line is quite close to that of the Y_true line, the differences between the lines is still visible. We can say that the plots reflect the prediction accuracy well.    
+  
+# 10. Sensitivity analysis  
+We test the sensitivity of the model by changing the prior from multi_normal to priors obtain by the normal distribution coefficient of each feature separately on the first 2 models.  
+  
+```{stan output.var = "LogitRegression2.stan"}
+data {
+  int<lower=1> N; //number of observation
+  int<lower=1> M; //number of explanatory variable
+  int Y[N];       //independent variable
+  matrix[N, M] X; //explanatory variables
+  
+  int<lower=1> N_test; //number of test observation
+  int Y_true[N_test]; //true Y
+  matrix[N_test, M] X_test; //test train
+  
+  vector[M] mu; //mean vector
+  vector[M] sigma; //covariance matrix
+}
+parameters {
+  vector[M] beta;
+}
+model {
+  for (m in 1:M) {
+    beta[m] ~ normal(mu[m], sigma[m]);//prior based on distribution of the explanatory variables
+  }
+  Y ~ bernoulli_logit(X*beta); //bernoulli logit since Y has boolean type
+}
+generated quantities {
+  vector[N_test] Y_pred = inv_logit(X_test * beta); //Y_pred
+  vector[N] log_lik;
+  for (n in 1:N) {
+    log_lik[n] = bernoulli_logit_lpmf(Y[n] |X[n, ] * beta);
+  }
+}
+```  
+  
+```{r include=FALSE}
+full_data = list(N = nrow(data), M = 11, Y = data$death, X =subset(data, select = - death) , 
+                 N_test = nrow(test), Y_true = test$death, X_test = subset(test, select = -death),
+                 mu = colMeans(subset(data, select = - death)), 
+                 sigma = c(11.9, 0.5, 969, 0.49, 0.118, 0.48, 97600, 1.03, 4.41, 0.48, 0.47))
+
+X = subset(data, select = c(age, ejection, creatinine, sodium))
+N = nrow(X)
+M = ncol(X)
+Y = data$death
+mu = c(60.8, 0.38, 1.39, 137)
+sigma_selected = c(11.9, 0.118, 1.03, 4.41)
+
+X_test = subset(test, select = c(age, ejection, creatinine, sodium))
+N_test = nrow(X_test)
+Y_true = test$death
+
+selected_data_2 = list(N = N, M = M, Y = Y, X = X, 
+                       N_test = N_test, Y_true = Y_true, X_test = X_test, mu = mu, sigma = sigma_selected)
+
+X = subset(data, select = c(age, ejection, creatinine))
+N = nrow(X)
+M = ncol(X)
+Y = data$death
+mu = c(60.8, 0.38, 1.39)
+sigma_selected = c(11.9, 0.118, 1.03)
+
+X_test = subset(test, select = c(age, ejection, creatinine))
+N_test = nrow(X_test)
+Y_true = test$death
+
+selected_data_1 = list(N = N, M = M, Y = Y, X = X, 
+                       N_test = N_test, Y_true = Y_true, X_test = X_test, mu = mu, sigma = sigma_selected)
+```  
+  
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+fit_selected_1 = stan(file = "LogitRegression2.stan", data = selected_data_1, refresh = 0)
+Y_pred_selected_1 = round(colMeans(extract(fit_selected_1)$Y_pred))
+```  
+  
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+fit_selected_2 = stan(file = "LogitRegression2.stan", data = selected_data_2, refresh = 0)
+Y_pred_selected_2 = round(colMeans(extract(fit_selected_2)$Y_pred))
+```  
+  
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+fit_full = stan(file = "LogitRegression2.stan", data = full_data, refresh = 0)
+Y_pred_full = round(colMeans(extract(fit_full)$Y_pred))
+```    
+  
+```{r warning=FALSE}
+print("\nRhat values: ")
+rhat(fit_selected_1)
+
+print("\nCheck divergences: ")
+check_divergences(fit_selected_1)
+
+print("Check treedepth:")
+check_treedepth(fit_selected_1)
+
+print("\nn_eff values: ")
+loo(fit_selected_1)$diagnostics$n_eff
+
+print("\nPerformance of k_hat values and elpd_loo")
+loo(fit_selected_1)
+
+print("\nDistribution of k_hat")
+hist(loo(fit_selected_1)$diagnostics$pareto_k, main = "Histogram of k_hat values")
+```  
+  
+```{r warning=FALSE}
+print("\nRhat values: ")
+rhat(fit_selected_2)
+
+print("\nCheck divergences: ")
+check_divergences(fit_selected_2)
+
+print("Check treedepth:")
+check_treedepth(fit_selected_2)
+
+print("\nn_eff values: ")
+loo(fit_selected_2)$diagnostics$n_eff
+
+print("\nPerformance of k_hat values and elpd_loo")
+loo(fit_selected_2)
+
+print("\nDistribution of k_hat")
+hist(loo(fit_selected_2)$diagnostics$pareto_k, main = "Histogram of k_hat values")
+```  
+  
+```{r warning=FALSE}
+print("\nRhat values: ")
+rhat(fit_full)
+
+print("\nCheck divergences: ")
+check_divergences(fit_full)
+
+print("Check treedepth:")
+check_treedepth(fit_full)
+
+print("\nn_eff values: ")
+loo(fit_full)$diagnostics$n_eff
+
+print("\nPerformance of k_hat values and elpd_loo")
+loo(fit_full)
+
+print("\nDistribution of k_hat")
+hist(loo(fit_full)$diagnostics$pareto_k, main = "Histogram of k_hat values")
+```      
+  
+From the results above, we can see that the first 2 model are not sensitive to changes. However, the full model is very sensitive and the result is much worse than what we obtained with the multivariate distribution.  
+  
+# 11. Issues and potential improvement  
+The issue of this dataset is the fact that there are many categorical features alongside with numberical features that has large mean and standard deviation. This in fact affects a lot on the prediction accuracy. Another factor that is needed to be considered is the prior choice. We notice that better prior choice is needed by the result of the previous models.  
+
+Testing whether normalization can improve the prediction accuracy with the first 2 combination of features:   
+```{r include=FALSE}
+data = read.csv(file = "heart_failure_clinical_records_dataset.csv")
+data = subset (data, select = -time)
+names(data) = c("age", "anaemia", "cpk", "diabetes", "ejection", "pressure", "platelets", "creatinine", "sodium", "sex", "smoking", "death")
+
+Y = data$death
+Y_true = test$death
+
+preproc1 = preProcess(subset(data, select = -death), method=c("center", "scale"))
+preproc2 = preProcess(subset(test, select = -death), method=c("center", "scale"))
+
+data_norm = predict(preproc1, subset(data, select = -death))
+test_norm = predict(preproc2, subset(test, select = -death))
+
+X = subset(data_norm, select = c(age, ejection, creatinine, sodium))
+N = nrow(X)
+M = ncol(X)
+mu = colMeans(X)
+sigma_selected = cov(X)
+
+X_test = subset(test_norm, select = c(age, ejection, creatinine, sodium))
+N_test = nrow(X_test)
+
+selected_data_2 = list(N = N, M = M, Y = Y, X = X, 
+                       N_test = N_test, Y_true = Y_true, X_test = X_test, mu = mu, sigma = sigma_selected)
+
+X = subset(data_norm, select = c(age, ejection, creatinine))
+N = nrow(X)
+M = ncol(X)
+mu = colMeans(X)
+sigma_full = cov(X)
+sigma_selected = cov(X)
+
+X_test = subset(test_norm, select = c(age, ejection, creatinine))
+N_test = nrow(X_test)
+
+selected_data_1 = list(N = N, M = M, Y = Y, X = X, 
+                       N_test = N_test, Y_true = Y_true, X_test = X_test, mu = mu, sigma = sigma_selected)
+```  
+  
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+fit_selected_1 = stan(file = "LogitRegression.stan", data = selected_data_1, refresh = 0)
+Y_pred_selected_1 = round(colMeans(extract(fit_selected_1)$Y_pred))
+```  
+  
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+fit_selected_2 = stan(file = "LogitRegression.stan", data = selected_data_2, refresh = 0)
+Y_pred_selected_2 = round(colMeans(extract(fit_selected_2)$Y_pred))
+```    
+
+```{r warning=FALSE}
+print("\nRhat values: ")
+rhat(fit_selected_1)
+
+print("\nCheck divergences: ")
+check_divergences(fit_selected_1)
+
+print("Check treedepth:")
+check_treedepth(fit_selected_1)
+
+print("\nn_eff values: ")
+loo(fit_selected_1)$diagnostics$n_eff
+
+print("\nPerformance of k_hat values and elpd_loo")
+loo(fit_selected_1)
+
+print("\nDistribution of k_hat")
+hist(loo(fit_selected_1)$diagnostics$pareto_k, main = "Histogram of k_hat values")
+```  
+  
+```{r warning=FALSE}
+print("\nRhat values: ")
+rhat(fit_selected_2)
+
+print("\nCheck divergences: ")
+check_divergences(fit_selected_2)
+
+print("Check treedepth:")
+check_treedepth(fit_selected_2)
+
+print("\nn_eff values: ")
+loo(fit_selected_2)$diagnostics$n_eff
+
+print("\nPerformance of k_hat values and elpd_loo")
+loo(fit_selected_2)
+
+print("\nDistribution of k_hat")
+hist(loo(fit_selected_2)$diagnostics$pareto_k, main = "Histogram of k_hat values")
+```  
+
+```{r}
+confusionMatrix(table(Y_pred_selected_1, Y_true))
+```    
+  
+```{r}
+confusionMatrix(table(Y_pred_selected_2, Y_true))
+```  
+
+```{r warning=FALSE}
+cat("\nSelected Bayesian Inference PSIS_LOO:" ,loo(fit_selected_1)$estimates[1], "\n");
+cat("\nSelected from correlation matrix PSIS_LOO:" , loo(fit_selected_2)$estimates[1], "\n");
+loo_compare(loo(fit_selected_1), loo(fit_selected_2))
+```    
+From the result above, beside the fact that convergence seems to not be affected by the normalization, we can see that both the prediction accuracy and the elpd-loo value dropped by a lot despite of our previous beliefs and argument. However, we believe that normalization is still necessary for this dataset but it has to be done alongside with choosing better priors.   
+  
+# 12. Conclusion  
+Although there are several factors or behavior that can consider to be the cause of hear failure and cardiovascular diseases, according to the analysis we made above, age, ejection contraction, level of creatinine in blood and level of sodium in heart are considered to be a more "direct" cause to heart failure. This conclusion is based on the fact that the second combination of features performs better than the rest, showed by elpd-loo value, prediction accuracy and so on. However, this result does not render other factors irrelevant. To our belief, other factors can be considered the cause for these 4 "direct" factors that ultimately causes heart failure. However, there are plenty of room for improvement with this analysis with choice of prior, model and so on to ultimately enhance credibility and accuracy of the prediction. As discussed in introduction, CVD is a dangerous disease as it can often lead to heart failure and death which is something we all want to prevent. Therefore, being able to predict the outcome and act fast can save many lives.     
+  
+# 13. Reflection  
+Thanks to the project, we have a better insight how models can be applied to reality. There were some difficulties while determining which models to apply, especially for hierarchical model. The data was not initially clustered, and it is also hard to cluster them in an appropriate way to fit into the hierarchical model. At the end of the day, we decided to omit it and focus on feature selection.    
+Also, at first we split the data by taking first 80% to be trainset and last 20% to be the testset. This results in a testset with only 2 rows death = 1 over total 60 rows. We have to find another way to shuffle the dataset and split it again to create a better test set.  
+Another thing about this project is that we have to try choosing prior by ourselves. It was not very easy and although our prior choice is not necessarily the best, we still learnt a lot from it.  
+Finally, we realize that normalization is really important as explanatory variables whose values are very close to zero (in non-normalized data) tend to have regression coefficients with a large face value even though the outcome is not as positive as we have speculated.
+  
+# 14. Full R code  
+```{r, eval = FALSE}
+library(loo)
+library(rstan)
+library(aaltobda)
+library(brms)
+library(corrplot)
+library(rstanarm)
+library(bayesplot)
+library(projpred)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(caret)
+library(glmnet)
+set.seed(123)
+smp_size = floor(0.75 * nrow(data))
+
+data = read.csv(file = "heart_failure_clinical_records_dataset.csv")
+data = subset (data, select = -time)
+names(data) = c("age", "anaemia", "cpk", "diabetes", "ejection", "pressure", "platelets", "creatinine", "sodium", "sex", "smoking", "death")
+
+age = data$age #mean = 60.8, std = 11.9
+anaemia = data$anaemia #boolean - decrease of red blood cells
+cpk = data$cpk #mean = 582, std = 969 - Level of the CPK enzyme in the blood
+diabetes = data$diabetes #boolean - has diabetes
+ejection = data$ejection #mean = 38.1%, std = 11.8% Percentage of blood leaving the heart at each contraction
+pressure = data$pressure #boolean If the patient has hypertension
+platelets = data$platelets #mean = 283k, std = 97.6k If the patient has hypertension
+creatinine = data$creatinine #mean = 1.39, std = 1.03 Level of serum creatinine in the blood
+sodium = data$sodium #mean = 137, std = 4.41, Level of serum sodium in the blood
+sex = data$sex #binary
+smoking = data$smoking #boolean
+time = data$time #mean = 130, std = 77.5 Follow-up period
+death = data$death #boolean (Response variable)
+
+smp_size = floor(0.75 * nrow(data))
+train_ind = sample(seq_len(nrow(data)), size = smp_size)
+data = data[train_ind, ]
+test = data[-train_ind, ]
+
+
+full_data = list(N = nrow(data), M = ncol(data), Y = data$death, X = data, 
+                 N_test = nrow(test), Y_true = test$death, X_test = test, mu = colMeans(data), sigma = cov(data))
+
+X = subset(data, select = c(age, ejection, creatinine, sodium))
+N = nrow(X)
+M = ncol(X)
+Y = data$death
+mu = c(60.8, 0.38, 1.39, 137)
+sigma_selected = cov(subset(data, select = c(age, ejection, creatinine, sodium)))
+
+X_test = subset(test, select = c(age, ejection, creatinine, sodium))
+N_test = nrow(X_test)
+Y_true = test$death
+
+selected_data_2 = list(N = N, M = M, Y = Y, X = X, 
+                       N_test = N_test, Y_true = Y_true, X_test = X_test, mu = mu, sigma = sigma_selected)
+
+X = subset(data, select = c(age, ejection, creatinine))
+N = nrow(X)
+M = ncol(X)
+Y = data$death
+mu = c(60.8, 0.38, 1.39)
+sigma_full = cov(data)
+sigma_selected = cov(subset(data, select = c(age, ejection, creatinine)))
+
+X_test = subset(test, select = c(age, ejection, creatinine))
+N_test = nrow(X_test)
+Y_true = test$death
+
+selected_data_1 = list(N = N, M = M, Y = Y, X = X, 
+                       N_test = N_test, Y_true = Y_true, X_test = X_test, mu = mu, sigma = sigma_selected)
+
+X = subset(data, select = c(age, ejection, creatinine, cpk, platelets, sodium))
+N = nrow(X)
+M = ncol(X)
+Y = data$death
+mu = c(60.8, 0.38, 1.39, 582, 283000, 137)
+sigma_selected = cov(subset(data, select = c(age, ejection, creatinine, cpk, platelets, sodium)))
+
+X_test = subset(test, select = c(age, ejection, creatinine, cpk, platelets, sodium))
+N_test = nrow(X_test)
+Y_true = test$death
+selected_data_3 = list(N = N, M = M, Y = Y, X = X, 
+                       N_test = N_test, Y_true = Y_true, X_test = X_test, mu = mu, sigma = sigma_selected)  
+
+corrplot(cor(data))
+
+barplot(table(death, age), 
+        main = "Death cases by Age", 
+        xlab = "Age", ylab = "Number of People", 
+        legend = rownames(table(death, age)))
+
+barplot(table(death, ejection), 
+        main = "Death cases by ejection fraction", 
+        xlab = "Percentage", ylab = "Percentage", 
+        legend = rownames(table(death, ejection)))
+
+barplot(table(death, creatinine), 
+        main = "Death cases by level of serum creatinine in blood", 
+        xlab = "Level of serum creatinine in blood", ylab = "Number of People", 
+        legend = rownames(table(death, creatinine)))
+
+barplot(table(death, sodium), 
+        main = "Death cases by level of serum sodium in blood", 
+        xlab = "Level of sodium in blood", ylab = "Number of People", 
+        legend = rownames(table(death, sodium)))
+
+barplot(table(death, sex), 
+        main = "Death in each sex", 
+        xlab = "sex", ylab = "Number of People", 
+        legend = rownames(table(death, sex)), beside = TRUE)
+
+fit_rf = randomForest(factor(death)~., data=data)
+varImpPlot(fit_rf)
+
+fit = stan_glm(death~age+anaemia+cpk+diabetes+ejection+pressure+platelets+creatinine+sodium+sex+smoking,
+          data = data,
+          family = binomial("logit"),
+          prior = default_prior_coef(family),
+          refresh=0,
+          verbose = FALSE)
+summary(fit)
+
+fit_cv = cv_varsel(fit, method = 'forward', cv_method='LOO')
+
+plot(fit_cv, stats = c('elpd', 'rmse'))
+
+fit_cv$solution_terms[1:3]
+
+x = as.matrix(data[,-12])
+y = data$death
+cv.lasso = cv.glmnet(x, y, family='binomial', alpha=1, parallel=TRUE, standardize=TRUE, type.measure='auc')
+plot(cv.lasso)
+cat('Min Lambda: ', cv.lasso$lambda.min, '\n 1Sd Lambda: ', cv.lasso$lambda.1se, '\n')
+df_coef = round(as.matrix(coef(cv.lasso, s=cv.lasso$lambda.min)), 2)
+df_coef[df_coef[, 1] != 0, ]
+
+fit_selected_1 = stan(file = "LogitRegression.stan", data = selected_data_1, refresh = 0)
+Y_pred_selected_1 = round(colMeans(extract(fit_selected_1)$Y_pred))
+
+fit_selected_2 = stan(file = "LogitRegression.stan", data = selected_data_2, refresh = 0)
+Y_pred_selected_2 = round(colMeans(extract(fit_selected_2)$Y_pred))
+
+fit_selected_3 = stan(file = "LogitRegression.stan", data = selected_data_3, refresh = 0)
+Y_pred_selected_3 = round(colMeans(extract(fit_selected_2)$Y_pred))
+
+fit_full = stan(file = "LogitRegression.stan", data = full_data, refresh = 0)
+Y_pred_full = round(colMeans(extract(fit_full)$Y_pred))
+
+print("Rhat values: ")
+rhat(fit_selected_1)
+
+print("Check divergences: ")
+check_divergences(fit_selected_1)
+
+print("n_eff values: ")
+loo(fit_selected_1)$diagnostics$n_eff
+
+print("Performance of k_hat values and elpd_loo")
+loo(fit_selected_1)
+
+print("Distribution of k_hat")
+hist(loo(fit_selected_1)$diagnostics$pareto_k, main = "Histogram of k_hat values")
+
+print("Rhat values: ")
+rhat(fit_selected_2)
+
+print("Check divergences: ")
+check_divergences(fit_selected_2)
+
+print("n_eff values: ")
+loo(fit_selected_2)$diagnostics$n_eff
+
+print("Performance of k_hat values and elpd_loo")
+loo(fit_selected_2)
+
+print("Distribution of k_hat")
+hist(loo(fit_selected_2)$diagnostics$pareto_k, main = "Histogram of k_hat values")
+
+print("Rhat values: ")
+rhat(fit_selected_3)
+
+print("Check divergences: ")
+check_divergences(fit_selected_3)
+
+print("n_eff values: ")
+loo(fit_selected_3)$diagnostics$n_eff
+
+print("Performance of k_hat values and elpd_loo")
+loo(fit_selected_3)
+
+print("Distribution of k_hat")
+hist(loo(fit_selected_3)$diagnostics$pareto_k, main = "Histogram of k_hat values")
+
+print("Rhat values: ")
+rhat(fit_full)
+
+print("Check divergences: ")
+check_divergences(fit_full)
+
+print("n_eff values: ")
+loo(fit_full)$diagnostics$n_eff
+
+print("Performance of k_hat values and elpd_loo")
+loo(fit_full)
+
+print("Distribution of k_hat")
+hist(loo(fit_full)$diagnostics$pareto_k, main = "Histogram of k_hat values")
+
+confusionMatrix(table(Y_pred_selected_1, Y_true))
+
+confusionMatrix(table(Y_pred_selected_2, Y_true))
+
+confusionMatrix(table(Y_pred_selected_3, Y_true))
+
+confusionMatrix(table(Y_pred_full, Y_true))
+
+cat("\nSelected Bayesian Inference PSIS_LOO:" ,loo(fit_selected_1)$estimates[1], "\n");
+cat("\nSelected from correlation matrix PSIS_LOO:" , loo(fit_selected_2)$estimates[1], "\n");
+cat("\nSelected from TreeClassifer PSIS_LOO:" ,loo(fit_selected_3)$estimates[1], "\n\n");
+cat("\nFull model PSIS_LOO:" ,loo(fit_full)$estimates[1], "\n\n");
+loo_compare(loo(fit_selected_1), loo(fit_selected_2), loo(fit_selected_3), loo(fit_full))
+
+yrep = round(extract(fit_selected_1)$Y_pred)
+ppc_dens_overlay(test$death, yrep[sample(nrow(yrep), 25), ])
+
+yrep = round(extract(fit_selected_2)$Y_pred)
+ppc_dens_overlay(test$death, yrep[sample(nrow(yrep), 25), ])
+
+yrep = round(extract(fit_selected_3)$Y_pred)
+ppc_dens_overlay(test$death, yrep[sample(nrow(yrep), 25), ])
+
+yrep = round(extract(fit_full)$Y_pred)
+ppc_dens_overlay(test$death, yrep[sample(nrow(yrep), 25), ])
+
+full_data = list(N = nrow(data), M = 11, Y = data$death, X =subset(data, select = - death) , 
+                 N_test = nrow(test), Y_true = test$death, X_test = subset(test, select = -death),
+                 mu = colMeans(subset(data, select = - death)), 
+                 sigma = c(11.9, 0.5, 969, 0.49, 0.118, 0.48, 97600, 1.03, 4.41, 0.48, 0.47))
+
+X = subset(data, select = c(age, ejection, creatinine, sodium))
+N = nrow(X)
+M = ncol(X)
+Y = data$death
+mu = c(60.8, 0.38, 1.39, 137)
+sigma_selected = c(11.9, 0.118, 1.03, 4.41)
+
+X_test = subset(test, select = c(age, ejection, creatinine, sodium))
+N_test = nrow(X_test)
+Y_true = test$death
+
+selected_data_2 = list(N = N, M = M, Y = Y, X = X, 
+                       N_test = N_test, Y_true = Y_true, X_test = X_test, mu = mu, sigma = sigma_selected)
+
+X = subset(data, select = c(age, ejection, creatinine))
+N = nrow(X)
+M = ncol(X)
+Y = data$death
+mu = c(60.8, 0.38, 1.39)
+sigma_selected = c(11.9, 0.118, 1.03)
+
+X_test = subset(test, select = c(age, ejection, creatinine))
+N_test = nrow(X_test)
+Y_true = test$death
+
+selected_data_1 = list(N = N, M = M, Y = Y, X = X, 
+                       N_test = N_test, Y_true = Y_true, X_test = X_test, mu = mu, sigma = sigma_selected)
+
+fit_selected_1 = stan(file = "LogitRegression2.stan", data = selected_data_1, refresh = 0)
+Y_pred_selected_1 = round(colMeans(extract(fit_selected_1)$Y_pred))
+
+fit_selected_2 = stan(file = "LogitRegression2.stan", data = selected_data_2, refresh = 0)
+Y_pred_selected_2 = round(colMeans(extract(fit_selected_2)$Y_pred))
+
+fit_full = stan(file = "LogitRegression2.stan", data = full_data, refresh = 0)
+Y_pred_full = round(colMeans(extract(fit_full)$Y_pred))
+
+print("\nRhat values: ")
+rhat(fit_selected_1)
+
+print("\nCheck divergences: ")
+check_divergences(fit_selected_1)
+
+print("\nn_eff values: ")
+loo(fit_selected_1)$diagnostics$n_eff
+
+print("\nPerformance of k_hat values and elpd_loo")
+loo(fit_selected_1)
+
+print("\nDistribution of k_hat")
+hist(loo(fit_selected_1)$diagnostics$pareto_k, main = "Histogram of k_hat values")
+
+print("\nRhat values: ")
+rhat(fit_selected_2)
+
+print("\nCheck divergences: ")
+check_divergences(fit_selected_2)
+
+print("\nn_eff values: ")
+loo(fit_selected_2)$diagnostics$n_eff
+
+print("\nPerformance of k_hat values and elpd_loo")
+loo(fit_selected_2)
+
+print("\nDistribution of k_hat")
+hist(loo(fit_selected_2)$diagnostics$pareto_k, main = "Histogram of k_hat values")
+
+print("\nRhat values: ")
+rhat(fit_full)
+
+print("\nCheck divergences: ")
+check_divergences(fit_full)
+
+print("\nn_eff values: ")
+loo(fit_full)$diagnostics$n_eff
+
+print("\nPerformance of k_hat values and elpd_loo")
+loo(fit_full)
+
+print("\nDistribution of k_hat")
+hist(loo(fit_full)$diagnostics$pareto_k, main = "Histogram of k_hat values")
+
+data = read.csv(file = "heart_failure_clinical_records_dataset.csv")
+data = subset (data, select = -time)
+names(data) = c("age", "anaemia", "cpk", "diabetes", "ejection", "pressure", "platelets", "creatinine", "sodium", "sex", "smoking", "death")
+smp_size = floor(0.75 * nrow(data))
+train_ind = sample(seq_len(nrow(data)), size = smp_size)
+org_data = data[train_ind, ]
+org_test = data[-train_ind, ]
+Y = org_data$death
+Y_true = org_test$death
+
+preproc1 = preProcess(data, method=c("center", "scale"))
+norm1 = predict(preproc1, data)
+
+data = norm1[train_ind, ]
+test = norm1[-train_ind, ]
+
+X = subset(data, select = c(age, ejection, creatinine, sodium))
+N = nrow(X)
+M = ncol(X)
+mu = colMeans(X)
+sigma_selected = cov(X)
+
+X_test = subset(test, select = c(age, ejection, creatinine, sodium))
+N_test = nrow(X_test)
+
+selected_data_2 = list(N = N, M = M, Y = Y, X = X, 
+                       N_test = N_test, Y_true = Y_true, X_test = X_test, mu = mu, sigma = sigma_selected)
+
+X = subset(data, select = c(age, ejection, creatinine))
+N = nrow(X)
+M = ncol(X)
+mu = colMeans(X)
+sigma_full = cov(X)
+sigma_selected = cov(subset(data, select = c(age, ejection, creatinine)))
+
+X_test = subset(test, select = c(age, ejection, creatinine))
+N_test = nrow(X_test)
+
+selected_data_1 = list(N = N, M = M, Y = Y, X = X, 
+                       N_test = N_test, Y_true = Y_true, X_test = X_test, mu = mu, sigma = sigma_selected)
+
+fit_selected_1 = stan(file = "LogitRegression.stan", data = selected_data_1, refresh = 0)
+Y_pred_selected_1 = round(colMeans(extract(fit_selected_1)$Y_pred))
+
+fit_selected_2 = stan(file = "LogitRegression.stan", data = selected_data_2, refresh = 0)
+Y_pred_selected_2 = round(colMeans(extract(fit_selected_2)$Y_pred))
+
+print("\nRhat values: ")
+rhat(fit_selected_1)
+
+print("\nCheck divergences: ")
+check_divergences(fit_selected_1)
+
+print("\nn_eff values: ")
+loo(fit_selected_1)$diagnostics$n_eff
+
+print("\nPerformance of k_hat values and elpd_loo")
+loo(fit_selected_1)
+
+print("\nDistribution of k_hat")
+hist(loo(fit_selected_1)$diagnostics$pareto_k, main = "Histogram of k_hat values")
+
+print("\nRhat values: ")
+rhat(fit_selected_2)
+
+print("\nCheck divergences: ")
+check_divergences(fit_selected_2)
+
+print("\nn_eff values: ")
+loo(fit_selected_2)$diagnostics$n_eff
+
+print("\nPerformance of k_hat values and elpd_loo")
+loo(fit_selected_2)
+
+print("\nDistribution of k_hat")
+hist(loo(fit_selected_2)$diagnostics$pareto_k, main = "Histogram of k_hat values")
+
+confusionMatrix(table(Y_pred_selected_1, Y_true))
+
+confusionMatrix(table(Y_pred_selected_2, Y_true))
+
+cat("\nSelected Bayesian Inference PSIS_LOO:" ,loo(fit_selected_1)$estimates[1], "\n");
+cat("\nSelected from correlation matrix PSIS_LOO:" , loo(fit_selected_2)$estimates[1], "\n");
+loo_compare(loo(fit_selected_1), loo(fit_selected_2))
+```
