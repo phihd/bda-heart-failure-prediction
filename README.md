@@ -1,4 +1,5 @@
 # Heart failure prediction
+Final project for the course Bayesian Data Analysis
 - Investigate heart failure possibility with logistic regression classifier  
 - Perform feature selection with Random Forest, LASSO, and Bayesian Inference
 
